@@ -672,7 +672,7 @@ if __name__ == "__main__":
     # uncomment and edit to pin specific models.
     template_bot = SummerTemplateBot2026(
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=1,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
@@ -685,9 +685,9 @@ if __name__ == "__main__":
                 timeout=60,
                 allowed_tries=2,
             ),
-            "summarizer": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-            "researcher": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-            "parser": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+            "summarizer": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
+            "researcher": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
+            "parser": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
         },
     )
 
