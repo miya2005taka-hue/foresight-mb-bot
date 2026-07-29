@@ -860,15 +860,19 @@ if __name__ == "__main__":
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
         llms={
+            # 2026-07-29: prior free models (llama-3.3-70b:free, qwen3-next-80b:free)
+            # were retired from OpenRouter's free tier (404 "unavailable for free").
+            # Repinned to models currently on the free tier. Free models churn
+            # frequently — re-verify with the /models API if 404s reappear.
             "default": GeneralLlm(
-                model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
+                model="openrouter/nvidia/nemotron-3-super-120b-a12b:free",
                 temperature=0.3,
-                timeout=60,
-                allowed_tries=2,
+                timeout=90,
+                allowed_tries=3,
             ),
-            "summarizer": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
-            "researcher": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
-            "parser": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
+            "summarizer": "openrouter/google/gemma-4-31b-it:free",
+            "researcher": "openrouter/google/gemma-4-31b-it:free",
+            "parser": "openrouter/openai/gpt-oss-20b:free",
         },
     )
 
