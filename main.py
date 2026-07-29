@@ -860,19 +860,23 @@ if __name__ == "__main__":
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
         llms={
-            # 2026-07-29: prior free models (llama-3.3-70b:free, qwen3-next-80b:free)
-            # were retired from OpenRouter's free tier (404 "unavailable for free").
-            # Repinned to models currently on the free tier. Free models churn
-            # frequently — re-verify with the /models API if 404s reappear.
+            # 2026-07-29: OpenRouter's free tier proved unusable for unattended
+            # operation — free models are retired without notice (404) and the
+            # remaining ones share a congested upstream pool (429). Metaculus
+            # donation credits are exhausted for the Summer season (next: Fall).
+            # Switched to cheap PAID OpenRouter models funded by the self-loaded
+            # $15 balance (user-approved P3 exception, 2026-07-29). The $15
+            # balance is itself the hard spend ceiling — it cannot be exceeded.
+            # Per-question cost with this panel is ~$0.002–0.005.
             "default": GeneralLlm(
-                model="openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+                model="openrouter/openai/gpt-oss-120b",
                 temperature=0.3,
                 timeout=90,
                 allowed_tries=3,
             ),
-            "summarizer": "openrouter/google/gemma-4-31b-it:free",
-            "researcher": "openrouter/google/gemma-4-31b-it:free",
-            "parser": "openrouter/openai/gpt-oss-20b:free",
+            "summarizer": "openrouter/openai/gpt-oss-20b",
+            "researcher": "openrouter/openai/gpt-oss-120b",
+            "parser": "openrouter/openai/gpt-oss-20b",
         },
     )
 
