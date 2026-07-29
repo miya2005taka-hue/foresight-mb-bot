@@ -868,14 +868,23 @@ if __name__ == "__main__":
             # $15 balance (user-approved P3 exception, 2026-07-29). The $15
             # balance is itself the hard spend ceiling — it cannot be exceeded.
             # Per-question cost with this panel is ~$0.002–0.005.
+            # gpt-oss-120b occasionally needs >60s; plain-string models use the
+            # 60s default and timed out (2/9 questions on the 2026-07-29 smoke).
+            # Give the 120b slots an explicit GeneralLlm with a longer timeout
+            # and retries so slow responses recover instead of failing the q.
             "default": GeneralLlm(
                 model="openrouter/openai/gpt-oss-120b",
                 temperature=0.3,
-                timeout=90,
+                timeout=120,
                 allowed_tries=3,
             ),
             "summarizer": "openrouter/openai/gpt-oss-20b",
-            "researcher": "openrouter/openai/gpt-oss-120b",
+            "researcher": GeneralLlm(
+                model="openrouter/openai/gpt-oss-120b",
+                temperature=0.3,
+                timeout=120,
+                allowed_tries=3,
+            ),
             "parser": "openrouter/openai/gpt-oss-20b",
         },
     )
