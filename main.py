@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import statistics
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -129,6 +130,87 @@ class SummerTemplateBot2026(ForecastBot):
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
 
+    ##################################### MULTI-EXPERT PANEL (P2) #####################################
+    # Four independent expert personas debate each question, then an adversarial
+    # chairperson synthesizes a final answer. Each persona is a separate LLM call
+    # using the SAME final-answer format as the single-shot template, so the
+    # existing per-type parsers (structure_output) handle the output unchanged.
+    #
+    # Rate-limit note: free OpenRouter tier is ~8 rpm. All persona calls plus the
+    # chairperson call are issued SEQUENTIALLY (never fire in parallel) to stay
+    # well under that budget. predictions_per_research_report stays at 1.
+
+    _PANEL_PERSONAS: list[tuple[str, str]] = [
+        (
+            "base_rate",
+            "You are the BASE-RATE / OUTSIDE-VIEW expert. Anchor on reference classes and historical frequencies of similar events before adjusting for specifics. Distrust vivid inside-view narratives.",
+        ),
+        (
+            "domain",
+            "You are the DOMAIN EXPERT for whatever field this question belongs to (economics, technology, geopolitics, science, sport, etc. — infer it from the question). Apply specialist mechanisms, actors, and constraints that a generalist would miss.",
+        ),
+        (
+            "macro",
+            "You are the MACRO / TIME-SERIES expert. Focus on the prevailing trend, momentum, and the time horizon: how much can plausibly change before resolution given the current trajectory and rate of change.",
+        ),
+        (
+            "red_team",
+            "You are the ADVERSARIAL RED-TEAM forecaster. Attack the emerging consensus: surface tail risks, overlooked scenarios, overconfidence, and status-quo bias. Argue for the direction the other experts are likely underweighting.",
+        ),
+    ]
+
+    async def _run_expert_panel(
+        self, question: MetaculusQuestion, base_prompt: str
+    ) -> tuple[list[str], str]:
+        """Run the 4 persona calls sequentially, then the chairperson synthesis.
+
+        Returns (persona_reasonings, chairperson_reasoning). Each persona output
+        and the chairperson output end in the template's standard final-answer
+        format so downstream parsers are unchanged.
+        """
+        persona_reasonings: list[str] = []
+        for name, role in self._PANEL_PERSONAS:
+            persona_prompt = clean_indents(
+                f"""
+                {role}
+
+                Give your independent expert view on the following forecasting task.
+                Reason from your specialty, then finish with the required final-answer format exactly as instructed.
+
+                {base_prompt}
+                """
+            )
+            # Sequential await: one persona at a time (free-tier 8 rpm safety).
+            reasoning = await self.get_llm("default", "llm").invoke(persona_prompt)
+            logger.info(f"Panel[{name}] for {question.page_url}: {reasoning}")
+            persona_reasonings.append(f"### Expert: {name}\n{reasoning}")
+
+        panel_block = "\n\n".join(persona_reasonings)
+        chair_prompt = clean_indents(
+            f"""
+            You are the CHAIRPERSON aggregating an adversarial panel of four expert forecasters.
+
+            Below are their independent analyses of the same question:
+
+            {panel_block}
+
+            Your job:
+            (1) Identify the key points of DISAGREEMENT between the experts and what drives them.
+            (2) Weight each expert by the QUALITY of their reasoning and evidence, not by how many agree — explicitly resist bandwagoning toward the majority if the minority argument is stronger.
+            (3) Take the red-team objections seriously: check the emerging consensus for overconfidence and tail risks.
+            Then produce YOUR OWN final forecast.
+
+            Reproduce the ORIGINAL task context and its required final-answer format below, and make your final answer conform to that exact format:
+
+            {base_prompt}
+            """
+        )
+        chairperson_reasoning = await self.get_llm("default", "llm").invoke(chair_prompt)
+        logger.info(
+            f"Panel[chairperson] for {question.page_url}: {chairperson_reasoning}"
+        )
+        return persona_reasonings, chairperson_reasoning
+
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -221,27 +303,45 @@ class SummerTemplateBot2026(ForecastBot):
             """
         )
 
-        return await self._binary_prompt_to_forecast(question, prompt)
+        # Panel: run 4 experts + chairperson, parse the chairperson's answer,
+        # and fall back to the median of the persona forecasts on parse failure.
+        persona_reasonings, chair_reasoning = await self._run_expert_panel(
+            question, prompt
+        )
+        try:
+            decimal_pred = await self._parse_binary_reasoning(question, chair_reasoning)
+            reasoning = chair_reasoning
+        except Exception as e:
+            logger.warning(
+                f"Chairperson parse failed for {question.page_url} ({e}); "
+                f"falling back to persona median."
+            )
+            persona_preds: list[float] = []
+            for r in persona_reasonings:
+                try:
+                    persona_preds.append(await self._parse_binary_reasoning(question, r))
+                except Exception:
+                    continue
+            if not persona_preds:
+                raise
+            decimal_pred = statistics.median(persona_preds)
+            reasoning = chair_reasoning + "\n\n[Aggregation fallback: persona median used.]"
 
-    async def _binary_prompt_to_forecast(
-        self,
-        question: BinaryQuestion,
-        prompt: str,
-    ) -> ReasonedPrediction[float]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        logger.info(
+            f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."
+        )
+        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
+
+    async def _parse_binary_reasoning(
+        self, question: BinaryQuestion, reasoning: str
+    ) -> float:
         binary_prediction: BinaryPrediction = await structure_output(
             reasoning,
             BinaryPrediction,
             model=self.get_llm("parser", "llm"),
             num_validation_samples=self._structure_output_validation_samples,
         )
-        decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
-
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."
-        )
-        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
+        return max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
 
     ##################################### MULTIPLE CHOICE QUESTIONS #####################################
 
@@ -286,13 +386,42 @@ class SummerTemplateBot2026(ForecastBot):
             Option_N: Probability_N
             """
         )
-        return await self._multiple_choice_prompt_to_forecast(question, prompt)
+        # Panel: run 4 experts + chairperson, parse the chairperson's answer,
+        # fall back to the per-option average distribution on parse failure.
+        persona_reasonings, chair_reasoning = await self._run_expert_panel(
+            question, prompt
+        )
+        try:
+            predicted_option_list = await self._parse_mc_reasoning(
+                question, chair_reasoning
+            )
+            reasoning = chair_reasoning
+        except Exception as e:
+            logger.warning(
+                f"Chairperson parse failed for {question.page_url} ({e}); "
+                f"falling back to persona average distribution."
+            )
+            persona_lists: list[PredictedOptionList] = []
+            for r in persona_reasonings:
+                try:
+                    persona_lists.append(await self._parse_mc_reasoning(question, r))
+                except Exception:
+                    continue
+            if not persona_lists:
+                raise
+            predicted_option_list = self._average_option_lists(question, persona_lists)
+            reasoning = chair_reasoning + "\n\n[Aggregation fallback: persona average used.]"
 
-    async def _multiple_choice_prompt_to_forecast(
-        self,
-        question: MultipleChoiceQuestion,
-        prompt: str,
-    ) -> ReasonedPrediction[PredictedOptionList]:
+        logger.info(
+            f"Forecasted URL {question.page_url} with prediction: {predicted_option_list}."
+        )
+        return ReasonedPrediction(
+            prediction_value=predicted_option_list, reasoning=reasoning
+        )
+
+    async def _parse_mc_reasoning(
+        self, question: MultipleChoiceQuestion, reasoning: str
+    ) -> PredictedOptionList:
         parsing_instructions = clean_indents(
             f"""
             Make sure that all option names are one of the following:
@@ -302,9 +431,7 @@ class SummerTemplateBot2026(ForecastBot):
             Additionally, you may sometimes need to parse a 0% probability. Please do not skip options with 0% but rather make it an entry in your final list with 0% probability.
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
-        predicted_option_list: PredictedOptionList = await structure_output(
+        return await structure_output(
             text_to_structure=reasoning,
             output_type=PredictedOptionList,
             model=self.get_llm("parser", "llm"),
@@ -312,12 +439,26 @@ class SummerTemplateBot2026(ForecastBot):
             additional_instructions=parsing_instructions,
         )
 
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {predicted_option_list}."
-        )
-        return ReasonedPrediction(
-            prediction_value=predicted_option_list, reasoning=reasoning
-        )
+    def _average_option_lists(
+        self,
+        question: MultipleChoiceQuestion,
+        option_lists: list[PredictedOptionList],
+    ) -> PredictedOptionList:
+        # Average probability per option across personas; PredictedOptionList's
+        # validator renormalizes so the result sums to ~1.
+        from forecasting_tools import PredictedOption
+
+        averaged: list[PredictedOption] = []
+        for option in question.options:
+            probs = [
+                po.probability
+                for pol in option_lists
+                for po in pol.predicted_options
+                if po.option_name == option
+            ]
+            mean_prob = statistics.mean(probs) if probs else 0.0
+            averaged.append(PredictedOption(option_name=option, probability=mean_prob))
+        return PredictedOptionList(predicted_options=averaged)
 
     ##################################### NUMERIC QUESTIONS #####################################
 
@@ -378,15 +519,42 @@ class SummerTemplateBot2026(ForecastBot):
             "
             """
         )
-        return await self._numeric_prompt_to_forecast(question, prompt)
+        # Panel: run 4 experts + chairperson, parse the chairperson's answer,
+        # fall back to the per-percentile average distribution on parse failure.
+        persona_reasonings, chair_reasoning = await self._run_expert_panel(
+            question, prompt
+        )
+        try:
+            prediction = await self._parse_numeric_reasoning(question, chair_reasoning)
+            reasoning = chair_reasoning
+        except Exception as e:
+            logger.warning(
+                f"Chairperson parse failed for {question.page_url} ({e}); "
+                f"falling back to persona average distribution."
+            )
+            persona_dists: list[NumericDistribution] = []
+            for r in persona_reasonings:
+                try:
+                    persona_dists.append(
+                        await self._parse_numeric_reasoning(question, r)
+                    )
+                except Exception:
+                    continue
+            if not persona_dists:
+                raise
+            prediction = self._average_numeric_distributions(question, persona_dists)
+            reasoning = chair_reasoning + "\n\n[Aggregation fallback: persona average used.]"
 
-    async def _numeric_prompt_to_forecast(
+        logger.info(
+            f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
+        )
+        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+
+    async def _parse_numeric_reasoning(
         self,
         question: NumericQuestion,
-        prompt: str,
-    ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        reasoning: str,
+    ) -> NumericDistribution:
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a forecast distribution for a numeric question.
@@ -407,11 +575,24 @@ class SummerTemplateBot2026(ForecastBot):
             additional_instructions=parsing_instructions,
             num_validation_samples=self._structure_output_validation_samples,
         )
-        prediction = NumericDistribution.from_question(percentile_list, question)
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
-        )
-        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+        return NumericDistribution.from_question(percentile_list, question)
+
+    def _average_numeric_distributions(
+        self,
+        question: NumericQuestion,
+        distributions: list[NumericDistribution],
+    ) -> NumericDistribution:
+        # Average the value at each declared percentile level across personas.
+        # Percentile levels are the template's fixed grid (0.1..0.9), so keys align.
+        values_by_pct: dict[float, list[float]] = {}
+        for dist in distributions:
+            for p in dist.declared_percentiles:
+                values_by_pct.setdefault(p.percentile, []).append(p.value)
+        averaged = [
+            Percentile(percentile=pct, value=statistics.mean(vals))
+            for pct, vals in sorted(values_by_pct.items())
+        ]
+        return NumericDistribution.from_question(averaged, question)
 
     ##################################### DATE QUESTIONS #####################################
 
@@ -679,15 +860,32 @@ if __name__ == "__main__":
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
         llms={
+            # 2026-07-29: OpenRouter's free tier proved unusable for unattended
+            # operation — free models are retired without notice (404) and the
+            # remaining ones share a congested upstream pool (429). Metaculus
+            # donation credits are exhausted for the Summer season (next: Fall).
+            # Switched to cheap PAID OpenRouter models funded by the self-loaded
+            # $15 balance (user-approved P3 exception, 2026-07-29). The $15
+            # balance is itself the hard spend ceiling — it cannot be exceeded.
+            # Per-question cost with this panel is ~$0.002–0.005.
+            # gpt-oss-120b occasionally needs >60s; plain-string models use the
+            # 60s default and timed out (2/9 questions on the 2026-07-29 smoke).
+            # Give the 120b slots an explicit GeneralLlm with a longer timeout
+            # and retries so slow responses recover instead of failing the q.
             "default": GeneralLlm(
-                model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
+                model="openrouter/openai/gpt-oss-120b",
                 temperature=0.3,
-                timeout=60,
-                allowed_tries=2,
+                timeout=120,
+                allowed_tries=3,
             ),
-            "summarizer": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
-            "researcher": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
-            "parser": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
+            "summarizer": "openrouter/openai/gpt-oss-20b",
+            "researcher": GeneralLlm(
+                model="openrouter/openai/gpt-oss-120b",
+                temperature=0.3,
+                timeout=120,
+                allowed_tries=3,
+            ),
+            "parser": "openrouter/openai/gpt-oss-20b",
         },
     )
 
