@@ -872,20 +872,41 @@ if __name__ == "__main__":
             # 60s default and timed out (2/9 questions on the 2026-07-29 smoke).
             # Give the 120b slots an explicit GeneralLlm with a longer timeout
             # and retries so slow responses recover instead of failing the q.
+            #
+            # 2026-08-02 hardening: unattended operation must survive a model
+            # being retired (404, as qwen/llama :free were on 07-29) or upstream
+            # congestion (429). OpenRouter supports automatic model fallback via
+            # the request-body "models" list — if the first is unavailable it
+            # transparently tries the next. Passed through GeneralLlm -> litellm
+            # -> OpenRouter via extra_body. Fallback anchor = openai/gpt-4o-mini
+            # (mainline, many providers, effectively never fully retired).
+            # Note: slugs in "models" are raw OpenRouter ids (no "openrouter/").
             "default": GeneralLlm(
                 model="openrouter/openai/gpt-oss-120b",
                 temperature=0.3,
                 timeout=120,
                 allowed_tries=3,
+                extra_body={"models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-4o-mini"]},
             ),
-            "summarizer": "openrouter/openai/gpt-oss-20b",
+            "summarizer": GeneralLlm(
+                model="openrouter/openai/gpt-oss-20b",
+                timeout=90,
+                allowed_tries=3,
+                extra_body={"models": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "openai/gpt-4o-mini"]},
+            ),
             "researcher": GeneralLlm(
                 model="openrouter/openai/gpt-oss-120b",
                 temperature=0.3,
                 timeout=120,
                 allowed_tries=3,
+                extra_body={"models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-4o-mini"]},
             ),
-            "parser": "openrouter/openai/gpt-oss-20b",
+            "parser": GeneralLlm(
+                model="openrouter/openai/gpt-oss-20b",
+                timeout=90,
+                allowed_tries=3,
+                extra_body={"models": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "openai/gpt-4o-mini"]},
+            ),
         },
     )
 
