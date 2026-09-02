@@ -145,18 +145,19 @@ for post in posts:
     )
 
 print(f"\n=== per-question ({len(rows)} rows, sorted by spot_peer) ===")
-print(f"{'id':>6} {'type':<16} {'spot_peer':>10} {'baseline':>10} {'p_truth':>8} {'cov':>5}  resolution / title")
+print("    id type                spot_peer   baseline  p_truth   cov  resolution | title")
 ranked = sorted(rows, key=lambda r: (r["spot_peer"] is None, r["spot_peer"] or 0))
 for r in ranked:
     sp = r["spot_peer"]
     bl = r["baseline"]
     cv = r["coverage"]
+    pt = r["p_truth"]
+    sp_s = format(sp, "10.2f") if isinstance(sp, (int, float)) else "         -"
+    bl_s = format(bl, "10.2f") if isinstance(bl, (int, float)) else "         -"
+    pt_s = format(pt, "8.3f") if isinstance(pt, (int, float)) else "       -"
+    cv_s = format(cv, "5.2f") if isinstance(cv, (int, float)) else "    -"
     print(
-        f"{r['id']:>6} {str(r['type']):<16} "
-        f"{(f'{sp:10.2f}' if isinstance(sp, (int, float)) else '         -')} "
-        f"{(f'{bl:10.2f}' if isinstance(bl, (int, float)) else '         -')} "
-        f"{(f"{r['p_truth']:8.3f}" if isinstance(r['p_truth'], (int, float)) else '       -')} "
-        f"{(f'{cv:5.2f}' if isinstance(cv, (int, float)) else '    -')}  "
+        f"{r['id']:>6} {str(r['type']):<16} {sp_s} {bl_s} {pt_s} {cv_s}  "
         f"{r['resolution']} | {r['title']}"
     )
 
