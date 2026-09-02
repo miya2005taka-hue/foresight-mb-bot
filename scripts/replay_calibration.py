@@ -88,11 +88,21 @@ def median_x(cdf):
     return 0.5
 
 
-def sharpened_density(cdf, x, lam):
-    """Density after squeezing the distribution toward its median (lam<1 sharpens)."""
+def sharpen_cdf(cdf, lam):
+    """Rebuild the whole CDF squeezed toward its median (lam<1 sharpens).
+
+    Sampling the source CDF pointwise is not enough: for x near the edges the
+    source location falls outside [0,1] and a clamped lookup fabricates zero
+    density. Building the full grid and renormalising keeps the out-of-range
+    mass piled at the bounds, which is what Metaculus does with closed bounds.
+    """
+    n = len(cdf)
     m = median_x(cdf)
-    src = m + (x - m) / lam
-    return density_at(cdf, src) / lam
+    grid = [cdf_at(cdf, m + (i / (n - 1) - m) / lam) for i in range(n)]
+    lo, hi = grid[0], grid[-1]
+    if hi - lo < 1e-12:
+        return list(cdf)
+    return [(g - lo) / (hi - lo) for g in grid]
 
 
 status, me = get("/api/users/me/")
@@ -162,7 +172,7 @@ print(
 )
 
 print("\n=== clip floor sensitivity (binary + multiple choice) ===")
-floors = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.20, 0.25]
+floors = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.49]
 curve = []
 for lo in floors:
     total = cl.replay(cat_records, lo)
@@ -171,6 +181,14 @@ for lo in floors:
 
 best_floor, best_total = max(curve, key=lambda t: t[1])
 print(f"  in-sample best floor={best_floor} total={best_total:.2f}")
+
+# How much of our edge is direction rather than confidence: how often did we
+# beat the peers at all, and what would ignoring our own view have scored?
+beat = [r for r in cat_records if r["score"] > 0]
+print(
+    f"  questions where we beat the peers: {len(beat)}/{len(cat_records)} "
+    f"(sum {sum(r['score'] for r in beat):+.2f})"
+)
 
 loo_total = 0.0
 picks = []
@@ -206,14 +224,20 @@ print(
     f"p05={cl.quantile(clipped, 0.05):.2f} p95={cl.quantile(clipped, 0.95):.2f}"
 )
 
-print("\n=== numeric-family sharpening (lam<1 squeezes toward our median) ===")
-for lam in (1.0, 0.85, 0.7, 0.6, 0.5, 0.4, 0.3):
+print("\n=== numeric-family width sweep (lam<1 sharpens, lam>1 widens) ===")
+for lam in (1.6, 1.3, 1.15, 1.0, 0.85, 0.7, 0.6, 0.5):
     total = 0.0
+    detail_bits = []
     for r in num_records:
         d0 = density_at(r["cdf"], r["x"])
         b = cl.log2(d0) - r["score"] / cl.K
-        d1 = sharpened_density(r["cdf"], r["x"], lam)
-        total += cl.K * (cl.log2(d1) - b)
-    print(f"  lam={lam:<5} total={total:9.2f}  delta={total - actual_num:+9.2f}")
+        d1 = density_at(sharpen_cdf(r["cdf"], lam), r["x"])
+        s = cl.K * (cl.log2(d1) - b)
+        total += s
+        detail_bits.append(f"{r['id']}:{s:.0f}")
+    print(
+        f"  lam={lam:<5} total={total:9.2f}  delta={total - actual_num:+9.2f}  "
+        f"[{' '.join(detail_bits)}]"
+    )
 
 print("\nDONE (read-only)")
