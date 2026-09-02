@@ -69,8 +69,7 @@ print(f"users/me [{status}] user_id={user_id} username={username}")
 
 # 2. Tournament facts
 status, proj = get(f"/api/projects/tournaments/{TOURNAMENT_ID}/")
-print(f"
---- tournament {TOURNAMENT_ID} [{status}] ---")
+print(f"\n--- tournament {TOURNAMENT_ID} [{status}] ---")
 if isinstance(proj, dict):
     for k in [
         "name",
@@ -98,8 +97,7 @@ else:
 
 # 3. Post counts (inspect the envelope shape first)
 status, sample = get("/api/posts/", tournaments=TOURNAMENT_ID, limit=1)
-print(f"
---- posts envelope [{status}] ---")
+print(f"\n--- posts envelope [{status}] ---")
 if isinstance(sample, dict):
     print("  keys:", sorted(sample)[:15])
     for k in ("count", "total_count", "next"):
@@ -129,8 +127,7 @@ for path, params in [
     (f"/api/projects/{TOURNAMENT_ID}/", {}),
 ]:
     status, body_ = get(path, **params)
-    print(f"
---- GET {path} {params} [{status}] ---")
+    print(f"\n--- GET {path} {params} [{status}] ---")
     if isinstance(body_, dict):
         print("  keys:", sorted(body_)[:20])
         entries = body_.get("entries") or body_.get("leaderboard") or []
@@ -145,8 +142,7 @@ for path, params in [
             print("  OUR ENTRY:", json.dumps(ours, ensure_ascii=False)[:700] or "not found")
             print("  TOP 5:", json.dumps(entries[:5], ensure_ascii=False)[:900])
     else:
-        print("  ", str(body_)[:200].replace("
-", " "))
+        print("  ", str(body_)[:200].replace("\n", " "))
 
 # 5. Our resolved questions with scores
 status, mine = get(
@@ -156,8 +152,7 @@ status, mine = get(
     statuses="resolved",
     limit=50,
 )
-print(f"
---- our resolved posts [{status}] ---")
+print(f"\n--- our resolved posts [{status}] ---")
 if isinstance(mine, dict):
     results = mine.get("results") or []
     print("  n:", len(results))
@@ -169,5 +164,4 @@ if isinstance(mine, dict):
             f"resolution={q.get('resolution')} score_keys={sorted(scores)[:6] if isinstance(scores, dict) else scores}"
         )
 
-print("
-DONE (read-only; nothing was posted)")
+print("\nDONE (read-only; nothing was posted)")
