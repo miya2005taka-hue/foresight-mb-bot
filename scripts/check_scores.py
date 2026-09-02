@@ -119,30 +119,56 @@ for label, params in [
     n = body_.get("count") if isinstance(body_, dict) else (len(body_) if isinstance(body_, list) else None)
     print(f"  posts[{label}] status={status} count={n}")
 
-# 4. Leaderboard candidates
-for path, params in [
-    (f"/api/leaderboards/project/{TOURNAMENT_ID}/", {}),
-    (f"/api/projects/tournaments/{TOURNAMENT_ID}/leaderboard/", {}),
-    ("/api/leaderboards/", {"projectId": TOURNAMENT_ID}),
-    (f"/api/projects/{TOURNAMENT_ID}/", {}),
-]:
-    status, body_ = get(path, **params)
-    print(f"\n--- GET {path} {params} [{status}] ---")
-    if isinstance(body_, dict):
-        print("  keys:", sorted(body_)[:20])
-        entries = body_.get("entries") or body_.get("leaderboard") or []
-        if isinstance(entries, dict):
-            entries = entries.get("entries", [])
-        if entries:
-            print("  entries:", len(entries))
-            def uid(e):
-                u = e.get("user")
-                return u.get("id") if isinstance(u, dict) else (e.get("user_id") or u)
-            ours = [e for e in entries if uid(e) == user_id]
-            print("  OUR ENTRY:", json.dumps(ours, ensure_ascii=False)[:700] or "not found")
-            print("  TOP 5:", json.dumps(entries[:5], ensure_ascii=False)[:900])
-    else:
-        print("  ", str(body_)[:200].replace("\n", " "))
+# 4. Leaderboard
+status, boards = get(f"/api/leaderboards/project/{TOURNAMENT_ID}/")
+print(f"\n--- leaderboards/project/{TOURNAMENT_ID} [{status}] ---")
+board_list = boards if isinstance(boards, list) else [boards] if isinstance(boards, dict) else []
+
+
+def uid(entry):
+    u = entry.get("user")
+    if isinstance(u, dict):
+        return u.get("id")
+    return entry.get("user_id") or u
+
+
+for board in board_list:
+    if not isinstance(board, dict):
+        continue
+    print(
+        f"  board id={board.get('id')} primary={board.get('is_primary_leaderboard')} "
+        f"score_type={board.get('score_type')} name={board.get('name')} "
+        f"keys={sorted(board)[:20]}"
+    )
+    entries = board.get("entries") or []
+    if not entries:
+        for path in (
+            f"/api/leaderboards/{board.get('id')}/",
+            f"/api/leaderboards/{board.get('id')}/entries/",
+        ):
+            st, b = get(path)
+            print(f"    probe {path} [{st}]")
+            if isinstance(b, dict):
+                entries = b.get("entries") or b.get("results") or []
+                if entries:
+                    break
+            elif isinstance(b, list) and b:
+                entries = b
+                break
+    if not entries:
+        continue
+    print(f"    entries={len(entries)}")
+    print(f"    entry keys={sorted(entries[0])[:25]}")
+    ranked = [e for e in entries if isinstance(e, dict)]
+    ours = [e for e in ranked if uid(e) == user_id]
+    print("    OUR ENTRY:", json.dumps(ours, ensure_ascii=False)[:900] or "not found")
+    for e in ranked[:5]:
+        u = e.get("user")
+        name = u.get("username") if isinstance(u, dict) else u
+        print(
+            f"    #{e.get('rank')} {name} score={e.get('score')} "
+            f"take={e.get('take')} prize={e.get('prize')} n={e.get('contribution_count')}"
+        )
 
 # 5. Our resolved questions with scores
 status, mine = get(
