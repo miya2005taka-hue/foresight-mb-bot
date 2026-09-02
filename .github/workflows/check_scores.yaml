@@ -1,0 +1,23 @@
+name: Check Metaculus scores
+
+on:
+  workflow_dispatch:
+    inputs:
+      tournament_id:
+        description: "Metaculus tournament id"
+        required: false
+        default: "33022"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe Metaculus (read-only)
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          TOURNAMENT_ID: ${{ inputs.tournament_id }}
+        run: python scripts/check_scores.py
