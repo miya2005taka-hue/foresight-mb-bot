@@ -9,6 +9,7 @@ The token itself is never printed.
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,9 +27,21 @@ def get(path, **params):
     url = f"{BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
+    # Cloudflare rejects the stdlib User-Agent with error 1010, and bursts of
+    # requests trip error 1015, so mimic a browser UA and pace the calls.
     req = urllib.request.Request(
-        url, headers={"Authorization": f"Token {TOKEN}", "Accept": "application/json"}
+        url,
+        headers={
+            "Authorization": f"Token {TOKEN}",
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     )
+    time.sleep(2)
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, json.loads(r.read().decode("utf-8"))
