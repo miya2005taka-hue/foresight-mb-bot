@@ -7,6 +7,10 @@ on:
         description: "Metaculus tournament id"
         required: false
         default: "33022"
+      script:
+        description: "Script under scripts/ to run"
+        required: false
+        default: "check_scores.py"
 
 jobs:
   check:
@@ -20,4 +24,4 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           TOURNAMENT_ID: ${{ inputs.tournament_id }}
-        run: python scripts/check_scores.py
+        run: python "scripts/${{ inputs.script }}"
