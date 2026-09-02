@@ -63,69 +63,111 @@ def show(label, status, body, keys_only=False):
 
 # 1. Who are we
 status, me = get("/api/users/me/")
-show("users/me", status, me, keys_only=True)
 user_id = me.get("id") if isinstance(me, dict) else None
 username = me.get("username") if isinstance(me, dict) else None
-print(f"user_id={user_id} username={username}")
+print(f"users/me [{status}] user_id={user_id} username={username}")
 
-# 2. Tournament shape
+# 2. Tournament facts
+status, proj = get(f"/api/projects/tournaments/{TOURNAMENT_ID}/")
+print(f"
+--- tournament {TOURNAMENT_ID} [{status}] ---")
+if isinstance(proj, dict):
+    for k in [
+        "name",
+        "slug",
+        "prize_pool",
+        "start_date",
+        "close_date",
+        "forecasting_end_date",
+        "is_ongoing",
+        "forecasters_count",
+        "forecasts_count",
+        "questions_count",
+        "posts_count",
+        "has_participated",
+        "bot_leaderboard_status",
+        "score_type",
+        "default_permission",
+        "timeline",
+    ]:
+        if k in proj:
+            print(f"  {k}: {json.dumps(proj[k], ensure_ascii=False)[:300]}")
+    print("  (other keys:", [k for k in sorted(proj) if k not in ("description",)][:40], ")")
+else:
+    print(str(proj)[:300])
+
+# 3. Post counts (inspect the envelope shape first)
+status, sample = get("/api/posts/", tournaments=TOURNAMENT_ID, limit=1)
+print(f"
+--- posts envelope [{status}] ---")
+if isinstance(sample, dict):
+    print("  keys:", sorted(sample)[:15])
+    for k in ("count", "total_count", "next"):
+        if k in sample:
+            print(f"  {k}: {sample[k]}")
+    results = sample.get("results") or []
+    if results:
+        print("  first result keys:", sorted(results[0])[:30])
+elif isinstance(sample, list):
+    print("  list len:", len(sample))
+
 for label, params in [
-    ("all posts", {}),
     ("open", {"statuses": "open"}),
     ("resolved", {"statuses": "resolved"}),
+    ("ours", {"forecaster_id": user_id}),
+    ("ours_resolved", {"forecaster_id": user_id, "statuses": "resolved"}),
 ]:
-    status, body = get("/api/posts/", tournaments=TOURNAMENT_ID, limit=1, **params)
-    count = body.get("count") if isinstance(body, dict) else body
-    print(f"posts[{label}] status={status} count={count}")
+    status, body_ = get("/api/posts/", tournaments=TOURNAMENT_ID, limit=1, **params)
+    n = body_.get("count") if isinstance(body_, dict) else (len(body_) if isinstance(body_, list) else None)
+    print(f"  posts[{label}] status={status} count={n}")
 
-# 3. Our forecasts in this tournament
-status, body = get(
+# 4. Leaderboard candidates
+for path, params in [
+    (f"/api/leaderboards/project/{TOURNAMENT_ID}/", {}),
+    (f"/api/projects/tournaments/{TOURNAMENT_ID}/leaderboard/", {}),
+    ("/api/leaderboards/", {"projectId": TOURNAMENT_ID}),
+    (f"/api/projects/{TOURNAMENT_ID}/", {}),
+]:
+    status, body_ = get(path, **params)
+    print(f"
+--- GET {path} {params} [{status}] ---")
+    if isinstance(body_, dict):
+        print("  keys:", sorted(body_)[:20])
+        entries = body_.get("entries") or body_.get("leaderboard") or []
+        if isinstance(entries, dict):
+            entries = entries.get("entries", [])
+        if entries:
+            print("  entries:", len(entries))
+            def uid(e):
+                u = e.get("user")
+                return u.get("id") if isinstance(u, dict) else (e.get("user_id") or u)
+            ours = [e for e in entries if uid(e) == user_id]
+            print("  OUR ENTRY:", json.dumps(ours, ensure_ascii=False)[:700] or "not found")
+            print("  TOP 5:", json.dumps(entries[:5], ensure_ascii=False)[:900])
+    else:
+        print("  ", str(body_)[:200].replace("
+", " "))
+
+# 5. Our resolved questions with scores
+status, mine = get(
     "/api/posts/",
     tournaments=TOURNAMENT_ID,
     forecaster_id=user_id,
-    limit=1,
+    statuses="resolved",
+    limit=50,
 )
-print(
-    "posts[forecast by us] status=",
-    status,
-    "count=",
-    body.get("count") if isinstance(body, dict) else body,
-)
+print(f"
+--- our resolved posts [{status}] ---")
+if isinstance(mine, dict):
+    results = mine.get("results") or []
+    print("  n:", len(results))
+    for r in results[:20]:
+        q = r.get("question") or {}
+        scores = q.get("my_forecasts", {}) if isinstance(q, dict) else {}
+        print(
+            f"  id={r.get('id')} status={r.get('status')} title={str(r.get('title'))[:60]!r} "
+            f"resolution={q.get('resolution')} score_keys={sorted(scores)[:6] if isinstance(scores, dict) else scores}"
+        )
 
-# 4. Leaderboard probes (endpoint shape is not documented publicly)
-for path, params in [
-    ("/api/leaderboards/", {"project": TOURNAMENT_ID}),
-    ("/api/leaderboards/", {"project_id": TOURNAMENT_ID}),
-    (f"/api/projects/{TOURNAMENT_ID}/leaderboard/", {}),
-    (f"/api/projects/tournaments/{TOURNAMENT_ID}/", {}),
-    ("/api/projects/tournaments/", {"slug": "summer-futureeval-2026"}),
-]:
-    status, body = get(path, **params)
-    show(f"GET {path} {params}", status, body, keys_only=True)
-    if isinstance(body, dict):
-        entries = body.get("entries") or body.get("leaderboard") or []
-        if isinstance(entries, list) and entries:
-            print(f"entries={len(entries)}")
-            ours = [
-                e
-                for e in entries
-                if isinstance(e, dict)
-                and (
-                    e.get("user_id") == user_id
-                    or (e.get("user") or {}).get("id") == user_id
-                    if isinstance(e.get("user"), dict)
-                    else e.get("user") == user_id
-                )
-            ]
-            print("OUR ENTRY:", json.dumps(ours, ensure_ascii=False)[:800] or "not found")
-            print("TOP 5:", json.dumps(entries[:5], ensure_ascii=False)[:800])
-
-# 5. Our scores (per-question), if the endpoint exists
-for path, params in [
-    ("/api/scores/", {"user": user_id, "project": TOURNAMENT_ID}),
-    (f"/api/users/{user_id}/scores/", {}),
-]:
-    status, body = get(path, **params)
-    show(f"GET {path} {params}", status, body, keys_only=True)
-
-print("\nDONE (read-only; nothing was posted)")
+print("
+DONE (read-only; nothing was posted)")
