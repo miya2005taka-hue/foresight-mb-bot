@@ -207,6 +207,22 @@ for w in (1.0, 0.9, 0.8, 0.6, 0.4, 0.2, 0.05):
     total = cl.replay_shrink(cat_records, w)
     print(f"  w={w:<5} total={total:9.2f}  delta={total - actual_cat:+9.2f}")
 
+weights = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+loo_shrink = 0.0
+wpicks = []
+for i, rec in enumerate(cat_records):
+    rest = cat_records[:i] + cat_records[i + 1 :]
+    w_star = max(weights, key=lambda w: cl.replay_shrink(rest, w))
+    wpicks.append(w_star)
+    b = cl.peer_term(rec["p"], rec["score"])
+    loo_shrink += cl.score_from_p(cl.shrink_to_uniform(rec["p"], rec["k"], w_star), b)
+print(
+    f"  LOO (weight chosen on the other n-1): total={loo_shrink:.2f} "
+    f"vs actual {actual_cat:.2f} delta={loo_shrink - actual_cat:+.2f} "
+    f"weights picked={sorted(set(wpicks))}"
+)
+
+
 loo_total = 0.0
 picks = []
 for i, rec in enumerate(binaries):
@@ -239,20 +255,52 @@ print(
     f"p05={cl.quantile(clipped, 0.05):.2f} p95={cl.quantile(clipped, 0.95):.2f}"
 )
 
-print("\n=== numeric-family width sweep (lam<1 sharpens, lam>1 widens) ===")
-for lam in (1.6, 1.3, 1.15, 1.0, 0.85, 0.7, 0.6, 0.5):
+print("
+=== numeric-family: width x tail-floor grid ===")
+print("  eps mixes a uniform over the range back in, so sharpening cannot send")
+print("  the density at a tail outcome to zero")
+
+
+def mixed_density(cdf, x, lam, eps):
+    return (1.0 - eps) * density_at(rescale_cdf(cdf, lam), x) + eps * 1.0
+
+
+def numeric_total(records, lam, eps):
     total = 0.0
-    detail_bits = []
-    for r in num_records:
-        d0 = density_at(r["cdf"], r["x"])
-        b = cl.log2(d0) - r["score"] / cl.K
-        d1 = density_at(rescale_cdf(r["cdf"], lam), r["x"])
-        s = cl.K * (cl.log2(d1) - b)
-        total += s
-        detail_bits.append(f"{r['id']}:{s:.0f}")
-    print(
-        f"  lam={lam:<5} total={total:9.2f}  delta={total - actual_num:+9.2f}  "
-        f"[{' '.join(detail_bits)}]"
-    )
+    for r in records:
+        b = cl.log2(density_at(r["cdf"], r["x"])) - r["score"] / cl.K
+        total += cl.K * (cl.log2(mixed_density(r["cdf"], r["x"], lam, eps)) - b)
+    return total
+
+
+lams = [1.3, 1.0, 0.85, 0.7, 0.6, 0.5]
+epss = [0.0, 0.02, 0.05, 0.10, 0.20]
+header = "".join(f"{e:>10}" for e in epss)
+print(f"  lam / eps {header}")
+for lam in lams:
+    cells = "".join(f"{numeric_total(num_records, lam, e):10.1f}" for e in epss)
+    print(f"  {lam:<9}" + cells)
+
+grid = [(lam, e) for lam in lams for e in epss]
+best_ge = max(grid, key=lambda ge: numeric_total(num_records, *ge))
+print(
+    f"  in-sample best (lam, eps)={best_ge} "
+    f"total={numeric_total(num_records, *best_ge):.2f} vs actual {actual_num:.2f}"
+)
+
+loo_num = 0.0
+npicks = []
+for i, rec in enumerate(num_records):
+    rest = num_records[:i] + num_records[i + 1 :]
+    ge = max(grid, key=lambda g: numeric_total(rest, *g))
+    npicks.append(ge)
+    b = cl.log2(density_at(rec["cdf"], rec["x"])) - rec["score"] / cl.K
+    loo_num += cl.K * (cl.log2(mixed_density(rec["cdf"], rec["x"], *ge)) - b)
+print(
+    f"  LOO (grid chosen on the other n-1): total={loo_num:.2f} "
+    f"vs actual {actual_num:.2f} delta={loo_num - actual_num:+.2f}"
+)
+print(f"  picks: {sorted(set(npicks))}")
+
 
 print("\nDONE (read-only)")
