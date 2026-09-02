@@ -88,21 +88,16 @@ def median_x(cdf):
     return 0.5
 
 
-def sharpen_cdf(cdf, lam):
-    """Rebuild the whole CDF squeezed toward its median (lam<1 sharpens).
+def rescale_cdf(cdf, lam):
+    """Rebuild the CDF squeezed (lam<1) or widened (lam>1) about its median.
 
-    Sampling the source CDF pointwise is not enough: for x near the edges the
-    source location falls outside [0,1] and a clamped lookup fabricates zero
-    density. Building the full grid and renormalising keeps the out-of-range
-    mass piled at the bounds, which is what Metaculus does with closed bounds.
+    Mass is never renormalised away: whatever the transform pushes past a bound
+    stays piled at that bound, exactly like Metaculus' out-of-range mass. At
+    lam=1 this must return the input unchanged, which the caller asserts.
     """
     n = len(cdf)
     m = median_x(cdf)
-    grid = [cdf_at(cdf, m + (i / (n - 1) - m) / lam) for i in range(n)]
-    lo, hi = grid[0], grid[-1]
-    if hi - lo < 1e-12:
-        return list(cdf)
-    return [(g - lo) / (hi - lo) for g in grid]
+    return [cdf_at(cdf, m + (i / (n - 1) - m) / lam) for i in range(n)]
 
 
 status, me = get("/api/users/me/")
@@ -145,12 +140,22 @@ for post in posts:
 
     if qtype == "binary" and len(values) == 2 and resolution in ("yes", "no"):
         p = values[1] if resolution == "yes" else values[0]
-        cat_records.append({"id": post["id"], "type": qtype, "p": p, "score": sp})
+        cat_records.append(
+            {"id": post["id"], "type": qtype, "p": p, "score": sp, "k": 2}
+        )
     elif qtype == "multiple_choice":
         options = q.get("options") or []
         if resolution in options and options.index(resolution) < len(values):
             p = values[options.index(resolution)]
-            cat_records.append({"id": post["id"], "type": qtype, "p": p, "score": sp})
+            cat_records.append(
+                {
+                    "id": post["id"],
+                    "type": qtype,
+                    "p": p,
+                    "score": sp,
+                    "k": len(options),
+                }
+            )
     elif qtype in ("numeric", "discrete", "date") and len(values) > 2:
         try:
             truth = float(resolution)
@@ -171,13 +176,19 @@ print(
     f"all {actual_cat + actual_num:.2f}"
 )
 
-print("\n=== clip floor sensitivity (binary + multiple choice) ===")
+binaries = [r for r in cat_records if r["type"] == "binary"]
+mcs = [r for r in cat_records if r["type"] == "multiple_choice"]
+actual_bin = sum(r["score"] for r in binaries)
+actual_mc = sum(r["score"] for r in mcs)
+
+print("\n=== clip floor sensitivity (BINARY only -- a clip is only implementable there) ===")
 floors = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.49]
+assert abs(cl.replay(binaries, 1e-9) - actual_bin) < 1e-6, "identity check failed"
 curve = []
 for lo in floors:
-    total = cl.replay(cat_records, lo)
+    total = cl.replay(binaries, lo)
     curve.append((lo, total))
-    print(f"  floor={lo:<5} total={total:9.2f}  delta={total - actual_cat:+9.2f}")
+    print(f"  floor={lo:<5} total={total:9.2f}  delta={total - actual_bin:+9.2f}")
 
 best_floor, best_total = max(curve, key=lambda t: t[1])
 print(f"  in-sample best floor={best_floor} total={best_total:.2f}")
@@ -190,24 +201,28 @@ print(
     f"(sum {sum(r['score'] for r in beat):+.2f})"
 )
 
+print("\n=== shrink toward uniform (all categorical, implementable for any k) ===")
+assert abs(cl.replay_shrink(cat_records, 1.0) - actual_cat) < 1e-6, "identity check failed"
+for w in (1.0, 0.9, 0.8, 0.6, 0.4, 0.2, 0.05):
+    total = cl.replay_shrink(cat_records, w)
+    print(f"  w={w:<5} total={total:9.2f}  delta={total - actual_cat:+9.2f}")
+
 loo_total = 0.0
 picks = []
-for i, rec in enumerate(cat_records):
-    rest = cat_records[:i] + cat_records[i + 1 :]
+for i, rec in enumerate(binaries):
+    rest = binaries[:i] + binaries[i + 1 :]
     lo_star = max(floors, key=lambda lo: cl.replay(rest, lo))
     picks.append(lo_star)
     b = cl.peer_term(rec["p"], rec["score"])
     loo_total += cl.score_from_p(cl.clip(rec["p"], lo_star), b)
 print("\n=== leave-one-out (floor chosen on the other n-1 questions) ===")
 print(
-    f"  LOO total={loo_total:.2f}  vs actual {actual_cat:.2f}  "
-    f"delta={loo_total - actual_cat:+.2f}"
+    f"  LOO total={loo_total:.2f}  vs actual binary {actual_bin:.2f}  "
+    f"delta={loo_total - actual_bin:+.2f}"
 )
 print(f"  floors picked: {sorted(set(picks))}")
 
-binaries = [r for r in cat_records if r["type"] == "binary"]
 raw, clipped = cl.simulate_binary(binaries, best_floor, draws=10000, seed=20260902)
-actual_bin = sum(r["score"] for r in binaries)
 worse = sum(1 for t in raw if t <= actual_bin)
 print(
     f"\n=== simulation: outcomes drawn from the peers "
@@ -231,7 +246,7 @@ for lam in (1.6, 1.3, 1.15, 1.0, 0.85, 0.7, 0.6, 0.5):
     for r in num_records:
         d0 = density_at(r["cdf"], r["x"])
         b = cl.log2(d0) - r["score"] / cl.K
-        d1 = density_at(sharpen_cdf(r["cdf"], lam), r["x"])
+        d1 = density_at(rescale_cdf(r["cdf"], lam), r["x"])
         s = cl.K * (cl.log2(d1) - b)
         total += s
         detail_bits.append(f"{r['id']}:{s:.0f}")

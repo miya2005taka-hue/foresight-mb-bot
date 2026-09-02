@@ -65,5 +65,25 @@ check("B9 matching the peers averages ~0", abs(sum(raw) / len(raw)) < 5.0)
 qs = [cl.quantile(raw, q) for q in (0.05, 0.5, 0.95)]
 check("B10 quantiles ordered", qs == sorted(qs))
 
+
+# B11: shrinking with w=1 is the identity, so the replay reproduces the actuals.
+recs_k = [{"p": 0.03, "score": -293.05, "k": 2}, {"p": 0.65, "score": -17.27, "k": 3}]
+check("B11 w=1 reproduces the observed total", abs(cl.replay_shrink(recs_k, 1.0) - (-310.32)) < 1e-6)
+
+# B12: shrinking pulls toward 1/k from either side.
+check("B12 shrink raises a low probability", cl.shrink_to_uniform(0.03, 2, 0.5) > 0.03)
+check("B12 shrink lowers a high probability", cl.shrink_to_uniform(0.90, 2, 0.5) < 0.90)
+check("B12 shrink lands on 1/k as w->0", abs(cl.shrink_to_uniform(0.9, 4, 1e-9) - 0.25) < 1e-6)
+
+# B13: a clip floor of ~0 is the identity too.
+check("B13 floor 1e-9 reproduces the observed total", abs(cl.replay(recs, 1e-9) - 9.0) < 1e-9)
+
+# B14: invalid shrink weights are rejected.
+try:
+    cl.shrink_to_uniform(0.5, 2, 0.0)
+    check("B14 invalid shrink weight rejected", False)
+except ValueError:
+    check("B14 invalid shrink weight rejected", True)
+
 print(f"\n{'ALL PASS' if not failed else 'FAILURES'}: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

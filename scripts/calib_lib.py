@@ -90,3 +90,25 @@ def quantile(values, q):
     if i >= len(s) - 1:
         return s[-1]
     return s[i] + (s[i + 1] - s[i]) * (pos - i)
+
+
+def shrink_to_uniform(p, k, w):
+    """Shrink one option's probability toward a uniform 1/k with weight w.
+
+    Unlike a hard clip this stays implementable for k>2 options: every option
+    is shrunk by the same rule, so the vector still sums to one.
+    """
+    if k < 2:
+        raise ValueError("k must be at least 2")
+    if not 0.0 < w <= 1.0:
+        raise ValueError("shrink weight must be in (0, 1]")
+    return w * p + (1.0 - w) / k
+
+
+def replay_shrink(records, w):
+    """Total score if every categorical forecast had been shrunk toward uniform."""
+    total = 0.0
+    for r in records:
+        b = peer_term(r["p"], r["score"])
+        total += score_from_p(shrink_to_uniform(r["p"], r["k"], w), b)
+    return total
