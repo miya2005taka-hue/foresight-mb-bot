@@ -113,44 +113,83 @@ for post in posts:
         print(f"  post {pid} fetch failed [{status}]")
         continue
     q = detail.get("question") or {}
-    qtype = q.get("type")
-    scores = {
-        p: v
-        for p, v in walk(detail)
-        if "score" in p.lower() and isinstance(v, (int, float))
-    }
     my = q.get("my_forecasts") or {}
+    sd = (my.get("score_data") or {}) if isinstance(my, dict) else {}
     latest = (my.get("latest") or {}) if isinstance(my, dict) else {}
+    values = latest.get("forecast_values") or []
+    options = q.get("options") or []
+    resolution = q.get("resolution")
+    qtype = q.get("type")
+
+    # Probability we placed on the outcome that actually happened.
+    p_truth = None
+    if qtype == "binary" and len(values) == 2 and resolution in ("yes", "no"):
+        p_truth = values[1] if resolution == "yes" else values[0]
+    elif qtype == "multiple_choice" and options and resolution in options:
+        idx = options.index(resolution)
+        if idx < len(values):
+            p_truth = values[idx]
+
     rows.append(
         {
             "id": pid,
             "type": qtype,
-            "title": str(detail.get("title"))[:70],
-            "resolution": q.get("resolution"),
-            "my_forecast": latest.get("forecast_values")
-            or latest.get("centers")
-            or latest.get("probability_yes"),
-            "scores": scores,
+            "title": str(detail.get("title"))[:55],
+            "resolution": str(resolution)[:28],
+            "p_truth": None if p_truth is None else round(p_truth, 4),
+            "spot_peer": sd.get("spot_peer_score"),
+            "peer": sd.get("peer_score"),
+            "baseline": sd.get("baseline_score"),
+            "coverage": sd.get("coverage"),
         }
     )
 
-print(f"\n=== per-question rows: {len(rows)} ===")
-for r in rows:
-    print(json.dumps(r, ensure_ascii=False)[:600])
+print(f"\n=== per-question ({len(rows)} rows, sorted by spot_peer) ===")
+print(f"{'id':>6} {'type':<16} {'spot_peer':>10} {'baseline':>10} {'p_truth':>8} {'cov':>5}  resolution / title")
+ranked = sorted(rows, key=lambda r: (r["spot_peer"] is None, r["spot_peer"] or 0))
+for r in ranked:
+    sp = r["spot_peer"]
+    bl = r["baseline"]
+    cv = r["coverage"]
+    print(
+        f"{r['id']:>6} {str(r['type']):<16} "
+        f"{(f'{sp:10.2f}' if isinstance(sp, (int, float)) else '         -')} "
+        f"{(f'{bl:10.2f}' if isinstance(bl, (int, float)) else '         -')} "
+        f"{(f"{r['p_truth']:8.3f}" if isinstance(r['p_truth'], (int, float)) else '       -')} "
+        f"{(f'{cv:5.2f}' if isinstance(cv, (int, float)) else '    -')}  "
+        f"{r['resolution']} | {r['title']}"
+    )
 
-vals = [
-    (r["id"], r["type"], v)
-    for r in rows
-    for k, v in r["scores"].items()
-    if k.endswith("peer_score") or k.endswith("spot_peer_score")
-]
-if vals:
-    total = sum(v for _, _, v in vals)
-    print(f"\npeer-score records: {len(vals)} total={total:.2f}")
-    by_type = {}
-    for _, t, v in vals:
-        by_type.setdefault(t, []).append(v)
-    for t, vs in sorted(by_type.items()):
-        print(f"  {t}: n={len(vs)} sum={sum(vs):.2f} mean={sum(vs)/len(vs):.2f}")
+scored = [r for r in rows if isinstance(r["spot_peer"], (int, float))]
+print(f"\n=== spot_peer totals (leaderboard metric) ===")
+print(f"  questions scored: {len(scored)}  total={sum(r['spot_peer'] for r in scored):.2f}")
+by_type = {}
+for r in scored:
+    by_type.setdefault(r["type"], []).append(r["spot_peer"])
+for t, vs in sorted(by_type.items()):
+    print(f"  {t:<16} n={len(vs):<3} sum={sum(vs):9.2f} mean={sum(vs)/len(vs):8.2f} worst={min(vs):8.2f} best={max(vs):8.2f}")
 
-print("\nDONE (read-only)")
+neg = [r for r in scored if r["spot_peer"] < 0]
+pos = [r for r in scored if r["spot_peer"] >= 0]
+print(f"  negative questions: {len(neg)} (sum {sum(r['spot_peer'] for r in neg):.2f}) / "
+      f"positive: {len(pos)} (sum {sum(r['spot_peer'] for r in pos):.2f})")
+worst = sorted(scored, key=lambda r: r["spot_peer"])[:5]
+print(f"  worst 5 account for {sum(r['spot_peer'] for r in worst):.2f} "
+      f"({100*sum(r['spot_peer'] for r in worst)/sum(r['spot_peer'] for r in scored):.0f}% of the loss)")
+
+conf = [r for r in scored if isinstance(r["p_truth"], (int, float))]
+if conf:
+    print(f"\n=== calibration on binary / multiple choice (n={len(conf)}) ===")
+    buckets = [(0.0, 0.1), (0.1, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.01)]
+    for lo, hi in buckets:
+        sel = [r for r in conf if lo <= r["p_truth"] < hi]
+        if sel:
+            print(
+                f"  p(truth) in [{lo:.1f},{hi:.1f}): n={len(sel):<3} "
+                f"spot_peer sum={sum(r['spot_peer'] for r in sel):9.2f}"
+            )
+    overconfident = [r for r in conf if r["p_truth"] < 0.2]
+    print(f"  outcomes we gave <20%: {len(overconfident)}/{len(conf)} "
+          f"(sum {sum(r['spot_peer'] for r in overconfident):.2f})")
+
+print(f"\nDONE (read-only)")
