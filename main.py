@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import re
 import statistics
 from datetime import datetime, timezone
 from typing import Literal
@@ -392,8 +393,9 @@ class SummerTemplateBot2026(ForecastBot):
             question, prompt
         )
         try:
-            predicted_option_list = await self._parse_mc_reasoning(
-                question, chair_reasoning
+            predicted_option_list = self._canonicalize_option_list(
+                question,
+                await self._parse_mc_reasoning(question, chair_reasoning),
             )
             reasoning = chair_reasoning
         except Exception as e:
@@ -404,7 +406,11 @@ class SummerTemplateBot2026(ForecastBot):
             persona_lists: list[PredictedOptionList] = []
             for r in persona_reasonings:
                 try:
-                    persona_lists.append(await self._parse_mc_reasoning(question, r))
+                    persona_lists.append(
+                        self._canonicalize_option_list(
+                            question, await self._parse_mc_reasoning(question, r)
+                        )
+                    )
                 except Exception:
                     continue
             if not persona_lists:
@@ -437,6 +443,82 @@ class SummerTemplateBot2026(ForecastBot):
             model=self.get_llm("parser", "llm"),
             num_validation_samples=self._structure_output_validation_samples,
             additional_instructions=parsing_instructions,
+        )
+
+    @staticmethod
+    def _normalize_option_name(name: str) -> str:
+        """Lowercase, drop whitespace, and strip an enumerating prefix.
+
+        The parser is told it may see options prepended with some variation of
+        "Option" (and it sometimes adds "A)" / "1." enumerators), so those are
+        removed before matching.
+        """
+        text = str(name).strip().lower()
+        stripped = re.sub(r"^(option\b\s*)?([a-z0-9]\s*[):.\-]\s*)?", "", text)
+        chosen = stripped if stripped else text
+        return "".join(chosen.split())
+
+    def _canonicalize_option_list(
+        self,
+        question: MultipleChoiceQuestion,
+        option_list: PredictedOptionList,
+    ) -> PredictedOptionList:
+        """Force a parsed distribution onto the question's exact option names.
+
+        Metaculus rejects a forecast (HTTP 400 "Forecast must reflect current
+        options") when the submitted option names are not exactly the question's
+        options. The parser LLM can drop, rename, or reorder them, so map back
+        here: exact matches first, then normalized/prefix matches, missing
+        options get 0.0. Raises when too little of the distribution is
+        recoverable so the caller can fall back.
+        """
+        from forecasting_tools import PredictedOption
+
+        parsed: dict[str, float] = {}
+        for po in option_list.predicted_options:
+            parsed[po.option_name] = parsed.get(po.option_name, 0.0) + float(
+                po.probability
+            )
+
+        resolved: dict[str, float] = {}
+        unclaimed = dict(parsed)
+        for option in question.options:  # pass 1: exact
+            if option in unclaimed:
+                resolved[option] = unclaimed.pop(option)
+        for option in question.options:  # pass 2: normalized / prefix
+            if option in resolved:
+                continue
+            target = self._normalize_option_name(option)
+            for name in list(unclaimed):
+                candidate = self._normalize_option_name(name)
+                if (
+                    candidate == target
+                    or candidate.startswith(target)
+                    or target.startswith(candidate)
+                ):
+                    resolved[option] = unclaimed.pop(name)
+                    break
+
+        total = sum(resolved.values())
+        if not resolved or total <= 0:
+            raise ValueError(
+                f"Parsed options {list(parsed)} could not be mapped onto "
+                f"question options {question.options}"
+            )
+        if len(resolved) < len(question.options) or unclaimed:
+            logger.warning(
+                f"Option name mismatch for {question.page_url}: parsed "
+                f"{list(parsed)} vs options {question.options}; "
+                f"mapped {len(resolved)}/{len(question.options)}, "
+                f"unmatched parsed names {list(unclaimed)}."
+            )
+        return PredictedOptionList(
+            predicted_options=[
+                PredictedOption(
+                    option_name=option, probability=resolved.get(option, 0.0)
+                )
+                for option in question.options
+            ]
         )
 
     def _average_option_lists(
