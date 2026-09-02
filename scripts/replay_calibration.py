@@ -272,6 +272,17 @@ def numeric_total(records, lam, eps):
     return total
 
 
+print("  per-question sanity: our density at the outcome vs the implied peer density")
+for r in num_records:
+    d0 = density_at(r["cdf"], r["x"])
+    b = cl.log2(d0) - r["score"] / cl.K
+    cdf = r["cdf"]
+    span = sum(1 for i in range(len(cdf) - 1) if cdf[i + 1] - cdf[i] > 1e-6)
+    print(
+        f"    {r['id']} x={r['x']:.3f} our_density={d0:8.4f} peer_density={2.0**b:8.4f} "
+        f"score={r['score']:8.2f} nonflat_bins={span}/{len(cdf) - 1}"
+    )
+
 lams = [1.3, 1.0, 0.85, 0.7, 0.6, 0.5]
 epss = [0.0, 0.02, 0.05, 0.10, 0.20]
 header = "".join(f"{e:>10}" for e in epss)
