@@ -164,6 +164,12 @@ for post in posts:
         x = scale_to_x(truth, q.get("scaling") or {})
         if x is None:
             continue
+        if not 0.0 <= x <= 1.0:
+            # The outcome landed outside the question's own range, so our
+            # density there is the clamped floor rather than a real forecast.
+            # Keeping it would let the floor value drive every counterfactual.
+            print(f"  excluding {post['id']}: outcome outside range (x={x:.3f})")
+            continue
         num_records.append(
             {"id": post["id"], "type": qtype, "cdf": values, "x": x, "score": sp}
         )
