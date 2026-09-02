@@ -255,8 +255,7 @@ print(
     f"p05={cl.quantile(clipped, 0.05):.2f} p95={cl.quantile(clipped, 0.95):.2f}"
 )
 
-print("
-=== numeric-family: width x tail-floor grid ===")
+print("\n=== numeric-family: width x tail-floor grid ===")
 print("  eps mixes a uniform over the range back in, so sharpening cannot send")
 print("  the density at a tail outcome to zero")
 
